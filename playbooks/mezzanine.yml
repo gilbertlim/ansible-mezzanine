@@ -1,0 +1,207 @@
+---
+- name: Deploy mezzanine
+  hosts: web
+  vars:
+    user: "{{ ansible_user }}"
+    proj_app: mezzanine_example
+    proj_name: "{{ proj_app }}"
+    venv_home: "{{ ansible_env.HOME }}/.virtualenvs"
+    venv_path: "{{ venv_home }}/{{ proj_name }}"
+    proj_path: "{{ ansible_env.HOME }}/mezzanine/{{ proj_name }}"
+    settings_path: "{{ proj_path }}/{{ proj_name }}"
+    reqs_path: requirements.txt
+    manage: "{{ python }} {{ proj_path }}/manage.py"
+    live_hostname: 172.16.109.130.xip.io
+    domains:
+      - 172.16.109.130.xip.io
+      - www.172.16.109.130.xip.io
+    repo_url: ssh://git@github.com/knight76/mezzanine_example.git
+    locale: en_US.UTF-8
+    # 아래 변수는 메자닌의 fabfile.py에서는 보이지 않는다.
+    # 그러나 편의상 해당 변수를 추가했다.
+    conf_path: /etc/nginx/conf
+    tls_enabled: true
+    python: "{{ venv_path }}/bin/python"
+    database_name: "{{ proj_name }}"
+    database_user: "{{ proj_name }}"
+    database_host: localhost
+    database_port: 5432
+    gunicorn_procname: gunicorn_mezzanine
+    num_workers: "multiprocessing.cpu_count() * 2 + 1"
+    # github_key_file: ~/.ssh/id_rsa_gilbertlim
+  vars_files:
+    - secrets.yml
+  tasks:
+    - name: Install apt packages
+      ansible.builtin.apt:
+        pkg: "{{ item }}"
+        update_cache: true # update local apt cache
+        cache_valid_time: 3600 # only after 3600 sec
+      become: true
+      with_items:
+        - git
+        - libjpeg-dev
+        - libpq-dev
+        - memcached
+        - nginx
+        - postgresql
+        - python-dev
+        # - python-pip
+        # - python-psycopg2
+        - python3-psycopg2
+        - python-setuptools
+        # - python-virtualenv
+        - python3-virtualenv
+        - supervisor
+        - python3-pip
+    - name: Create project path
+      ansible.builtin.file:
+        path: "{{ proj_path }}"
+        state: directory
+        mode: 0600
+    - name: Create a logs directory
+      ansible.builtin.file:
+        path: "{{ ansible_env.HOME }}/logs"
+        state: directory
+        mode: 0600
+    - name: Check out the repository on the host
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ proj_path }}"
+        version: latest
+        accept_hostkey: true
+        # key_file: "{{ github_key_file }}"
+    - name: Install Python requirements globally via pip
+      ansible.builtin.pip:
+        name: "{{ item }}"
+        # state: latest
+      with_items:
+        - pip
+        - virtualenv
+        - virtualenvwrapper
+      become: true
+    - name: Create project locale
+      community.general.locale_gen:
+        name: "{{ locale }}"
+      become: true
+    - name: Create a DB user
+      community.postgresql.postgresql_user:
+        name: "{{ database_user }}"
+        password: "{{ db_pass }}"
+      become: true
+      become_user: postgres
+    - name: Create the database
+      community.postgresql.postgresql_db:
+        name: "{{ database_name }}"
+        owner: "{{ database_user }}"
+        encoding: UTF8
+        lc_ctype: "{{ locale }}"
+        lc_collate: "{{ locale }}"
+        template: template0
+      become: true
+      become_user: postgres
+    - name: Ensure config path exists
+      ansible.builtin.file:
+        path: "{{ conf_path }}"
+        state: directory
+        mode: 0600
+      become: true
+    - name: Create tls certificates
+      ansible.builtin.command: >
+        openssl req -new -x509 -nodes -out {{ proj_name }}.crt
+        -keyout {{ proj_name }}.key -subj '/CN={{ domains[0] }}' -days 3650
+        chdir={{ conf_path }}
+        creates={{ conf_path }}/{{ proj_name }}.crt
+      become: true
+      when: tls_enabled
+      notify: Restart nginx
+    - name: Remove the default nginx config file
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: Restart nginx
+      become: true
+    - name: Set the nginx config file
+      ansible.builtin.template:
+        src: templates/nginx.conf.j2
+        dest: /etc/nginx/sites-available/mezzanine.conf
+        mode: 0600
+      notify: Restart nginx
+      become: true
+    - name: Enable the nginx config file
+      ansible.builtin.file:
+        src: /etc/nginx/sites-available/mezzanine.conf
+        dest: /etc/nginx/sites-enabled/mezzanine.conf
+        state: link
+      become: true
+      notify: Restart nginx
+    - name: Set the supervisor config file
+      ansible.builtin.template:
+        src: templates/supervisor.conf.j2
+        dest: /etc/supervisor/conf.d/mezzanine.conf
+        mode: 0600
+      become: true
+      notify: Restart supervisor
+    - name: Install poll twitter cron job
+      ansible.builtin.cron:
+        name: "poll twitter"
+        minute: "*/5"
+        user: "{{ user }}"
+        job: "{{ manage }} poll_twitter"
+    - name: Set the gunicorn config file
+      ansible.builtin.template:
+        src: templates/gunicorn.conf.py.j2
+        dest: "{{ proj_path }}/gunicorn.conf.py"
+        mode: 0600
+    - name: Generate the settings file
+      ansible.builtin.template:
+        src: templates/local_settings.py.j2
+        dest: "{{ settings_path }}/local_settings.py"
+        mode: 0600
+    - name: Install requirements.txt
+      ansible.builtin.pip:
+        requirements: "{{ proj_path }}/{{ reqs_path }}"
+        virtualenv: "{{ venv_path }}"
+    - name: Install required python packages
+      ansible.builtin.pip:
+        name: "{{ item }}"
+        virtualenv: "{{ venv_path }}"
+      with_items:
+        - gunicorn
+        - setproctitle
+        - psycopg2
+        - django-compressor
+        - python-memcached
+    - name: Apply migrations to create the database, collect static content
+      community.general.django_manage:
+        command: "{{ item }}"
+        app_path: "{{ proj_path }}"
+        virtualenv: "{{ venv_path }}"
+      with_items:
+        - migrate
+        - collectstatic
+    - name: Set the site id
+      ansible.builtin.script: scripts/setsite.py
+      environment:
+        PATH: "{{ venv_path }}/bin"
+        PROJECT_DIR: "{{ proj_path }}"
+        PROJECT_APP: "{{ proj_app }}"
+        WEBSITE_DOMAIN: "{{ live_hostname }}"
+    - name: Set the admin password
+      ansible.builtin.script: scripts/setadmin.py
+      environment:
+        PATH: "{{ venv_path }}/bin"
+        PROJECT_DIR: "{{ proj_path }}"
+        PROJECT_APP: "{{ proj_app }}"
+        ADMIN_PASSWORD: "{{ admin_pass }}"
+  handlers:
+    - name: Restart supervisor
+      community.general.supervisorctl:
+        name: "{{ gunicorn_procname }}"
+        state: restarted
+      become: true
+    - name: Restart nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
+      become: true
