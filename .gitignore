@@ -1,0 +1,6 @@
+secrets.yml
+
+.vagrant
+
+*.crt
+*.key
