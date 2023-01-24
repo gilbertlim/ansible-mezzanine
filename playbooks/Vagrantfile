@@ -2,7 +2,7 @@ VAGRANTFILE_API_VERSION = "2"
 
 Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
   config.vm.box = "starboard/ubuntu-arm64-20.04.5"
-  config.vm.network "private_network", ip: "172.16.109.130"
+  config.vm.network :private_network, ip: "172.16.109.130", netmask: "255.255.255.0"
   config.ssh.forward_agent = true
 
   config.vm.provider "vmware_desktop" do |v|

@@ -1,6 +1,7 @@
 ---
 - name: Deploy mezzanine
   hosts: web
+  become: true
   vars:
     user: "{{ ansible_user }}"
     proj_app: mezzanine_example
@@ -15,7 +16,7 @@
     domains:
       - 172.16.109.130.xip.io
       - www.172.16.109.130.xip.io
-    repo_url: ssh://git@github.com/knight76/mezzanine_example.git
+    repo_url: git@github.com:knight76/mezzanine_example.git
     locale: en_US.UTF-8
     # 아래 변수는 메자닌의 fabfile.py에서는 보이지 않는다.
     # 그러나 편의상 해당 변수를 추가했다.
@@ -28,7 +29,7 @@
     database_port: 5432
     gunicorn_procname: gunicorn_mezzanine
     num_workers: "multiprocessing.cpu_count() * 2 + 1"
-    # github_key_file: ~/.ssh/id_rsa_gilbertlim
+    github_key_file: ~/.ssh/id_ansible_github
   vars_files:
     - secrets.yml
   tasks:
@@ -54,6 +55,7 @@
         - python3-virtualenv
         - supervisor
         - python3-pip
+      tags: [apt install]
     - name: Create project path
       ansible.builtin.file:
         path: "{{ proj_path }}"
@@ -64,13 +66,29 @@
         path: "{{ ansible_env.HOME }}/logs"
         state: directory
         mode: 0600
+    - name: Clone github ssh public key
+      ansible.builtin.copy:
+        src: "{{ github_key_file }}"
+        dest: "{{ github_key_file }}"
+        mode: 0400
+    - name: Create ssh config
+      ansible.builtin.copy:
+        src: files/config
+        dest: ~/.ssh/config
+        mode: 0400
+    - name: SSH add
+      ansible.builtin.shell: |
+        eval "$(ssh-agent -s)"
+        ssh-add {{ github_key_file }}
+      changed_when: false
     - name: Check out the repository on the host
       ansible.builtin.git:
         repo: "{{ repo_url }}"
         dest: "{{ proj_path }}"
-        version: latest
+        version: 19e58b0f506a3c4a0056913c366577eb34d39207
         accept_hostkey: true
-        # key_file: "{{ github_key_file }}"
+        key_file: "{{ github_key_file }}"
+      become: true
     - name: Install Python requirements globally via pip
       ansible.builtin.pip:
         name: "{{ item }}"
@@ -172,6 +190,12 @@
         - psycopg2
         - django-compressor
         - python-memcached
+    - name: Reinstall pip package for django 1.11.29
+      ansible.builtin.pip:
+        name:
+          - filebrowser-safe==1.0.0
+          - psycopg2==2.8.6
+        virtualenv: "{{ venv_path }}"
     - name: Apply migrations to create the database, collect static content
       community.general.django_manage:
         command: "{{ item }}"
