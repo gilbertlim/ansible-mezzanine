@@ -117,7 +117,7 @@
         lc_collate: "{{ locale }}"
         template: template0
       become: true
-      become_user: postgres
+      become_user: postgres # postgres 설치 시 관리자인 postgres 유저 자동 생성. 
     - name: Ensure config path exists
       ansible.builtin.file:
         path: "{{ conf_path }}"
@@ -202,8 +202,8 @@
         app_path: "{{ proj_path }}"
         virtualenv: "{{ venv_path }}"
       with_items:
-        - migrate
-        - collectstatic
+        - migrate # db table을 장고 모델로 생성하고 업데이트
+        - collectstatic # 정적 컨텐츠를 디렉토리에 복사
     - name: Set the site id
       ansible.builtin.script: scripts/setsite.py
       environment:
